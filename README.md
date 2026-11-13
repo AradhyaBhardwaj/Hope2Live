@@ -8,6 +8,7 @@ Hope2Live is a React-based blood-donation coordination interface that connects p
 
 - React 19
 - Vite
+- Java 17 (built-in JDK HTTP server and HttpClient)
 - Supabase Auth and PostgreSQL
 - Custom CSS
 
@@ -33,16 +34,22 @@ Hope2Live is a React-based blood-donation coordination interface that connects p
    ```
 
 3. In the Supabase SQL Editor, run `supabase/migrations/20261011000100_private_chat_and_donation_cooldown.sql`. It configures participant-only private chat access, a private per-user `blood-reports` Storage bucket, the profile report path, nullable last-donation dates, per-donor unavailable responses, and server-side checks for report upload and the six-month donor cooldown. The project must already have the documented tables and their referenced columns.
-4. Run `supabase/migrations/20261011000200_require_accepted_donation_for_chat.sql`, `supabase/migrations/20261011000300_current_request_chat_lifecycle.sql`, `supabase/migrations/20261011000400_show_accepted_requests_to_donors.sql`, and `supabase/migrations/20261011000500_secure_donation_workflow.sql`, in that order. These restrict chat to accepted donors, block chats for cancelled requests, delete messages when a request is cancelled, keep accepted requests visible to the donor, and lock the recipient/donor workflow to its actual participants.
+4. Run `supabase/migrations/20261011000200_require_accepted_donation_for_chat.sql`, `supabase/migrations/20261011000300_current_request_chat_lifecycle.sql`, `supabase/migrations/20261011000400_show_accepted_requests_to_donors.sql`, and `supabase/migrations/20261011000500_secure_donation_workflow.sql`, in that order. These restrict chat to accepted donors, block chats for cancelled requests, delete messages when a request is cancelled, keep accepted requests visible to the donor, and lock the recipient/donor workflow to its actual participants. In the dashboard, **Close request** moves a request to Past Requests and prevents donors from responding to it.
 5. The app also requires the existing RPC functions `get_matching_blood_requests`, `get_request_donation_responses`, and `accept_donation_response`. Their definitions are not included in this repository and must already exist in Supabase.
 
-6. Start the development server:
+6. Start the complete application (Java API + Vite) from the project root terminal:
 
    ```bash
-   npm run dev
+   npm run dev:full
    ```
 
-7. Run the production build and lint checks:
+   This command compiles the Java 17 source into `backend-java/target/classes`, starts the Java API on `127.0.0.1:8081`, and starts Vite. Vite proxies `/api` calls to Java. Stop both processes with `Ctrl+C`.
+
+   To run only the original React frontend without Java, use `npm run dev`.
+
+7. The donor matching screen first calls the Java API. Java validates the active Supabase access token through Supabase Auth and forwards the existing `get_matching_blood_requests` and `get_donor_accepted_blood_requests` RPC calls using that same user JWT. This preserves PostgreSQL Row Level Security; no service-role key or database password is used. If Java is unavailable, the frontend falls back to the original direct Supabase RPC flow.
+
+8. Run the production build and lint checks:
 
    ```bash
    npm run build
@@ -56,6 +63,12 @@ Hope2Live is a React-based blood-donation coordination interface that connects p
 - A publishable key is expected to be visible in browser code; database security must be enforced with Row Level Security and carefully audited RPC permissions.
 - Keep exact donor coordinates private and disclose only what is necessary for matching.
 - Before deployment, test authorization for every read/write operation, including private donation messages and request acceptance.
+
+## Form input validation
+
+- Name fields accept Unicode letters and spaces only.
+- A profile mobile number is optional; when provided, it must contain exactly 10 digits and start with 6, 7, 8, or 9. The form filters non-digits and prevents entering more than 10 digits.
+- These checks are enforced by the app's forms and write handlers. Database-level constraints depend on the separately configured Supabase schema.
 
 ## Project structure
 
