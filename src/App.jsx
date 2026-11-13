@@ -7,6 +7,28 @@ import {
 } from "react";
 import { supabase } from "./supabaseClient";
 
+const sanitizeName = (value) =>
+  value
+    .replace(/[^\p{L}\p{M} ]/gu, "")
+    .replace(/ {2,}/g, " ");
+
+const isValidName = (value) =>
+  /^\p{L}\p{M}*(?: \p{L}\p{M}*)*$/u.test(value.trim());
+
+const sanitizePhone = (value) => {
+  const digits = value.replace(/[^0-9]/g, "");
+
+  if (digits && !/^[6-9]/.test(digits)) return "";
+
+  return digits.slice(0, 10);
+};
+
+const isValidPhone = (value) =>
+  value === "" || /^[6-9][0-9]{9}$/.test(value);
+
+const MOBILE_NUMBER_ERROR =
+  "Enter a 10-digit mobile number starting with 6, 7, 8, or 9.";
+
 /* =========================================================
    REVEAL ANIMATION HELPER
 ========================================================= */
@@ -962,14 +984,21 @@ function SupportPage() {
     useState("");
 
   const handleChange = (e) => {
-    setForm({
-      ...form,
-      [e.target.name]: e.target.value,
-    });
+    const { name, value } = e.target;
+
+    setForm((previous) => ({
+      ...previous,
+      [name]: name === "name" ? sanitizeName(value) : value,
+    }));
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+
+    if (!isValidName(form.name)) {
+      setErrorMessage("Name can contain letters and spaces only.");
+      return;
+    }
 
     setLoading(true);
     setErrorMessage("");
@@ -1140,6 +1169,7 @@ function SupportPage() {
                   value={form.name}
                   onChange={handleChange}
                   placeholder="Enter your full name"
+                  maxLength={100}
                   required
                 />
               </label>
@@ -1673,6 +1703,14 @@ function LoginPage({
             <Logo navigate={navigate} />
           </div>
 
+          <button
+            type="button"
+            className="secondary-button auth-home-button"
+            onClick={() => navigate("home")}
+          >
+            ← Home
+          </button>
+
           <div className="auth-heading">
 
             <p className="eyebrow">
@@ -1876,6 +1914,11 @@ function SignupPage({
   const handleSignup = async (e) => {
     e.preventDefault();
 
+    if (!isValidName(name)) {
+      setErrorMessage("Name can contain letters and spaces only.");
+      return;
+    }
+
     setLoading(true);
     setErrorMessage("");
     setSuccessMessage("");
@@ -1945,6 +1988,14 @@ function SignupPage({
             <Logo navigate={navigate} />
           </div>
 
+          <button
+            type="button"
+            className="secondary-button auth-home-button"
+            onClick={() => navigate("home")}
+          >
+            ← Home
+          </button>
+
           <div className="auth-heading">
 
             <p className="eyebrow">
@@ -2005,11 +2056,12 @@ function SignupPage({
                   value={name}
                   onChange={(e) =>
                     setName(
-                      e.target.value
+                      sanitizeName(e.target.value)
                     )
                   }
                   placeholder="Enter your full name"
                   autoComplete="name"
+                  maxLength={100}
                   required
                 />
               </div>
@@ -2329,7 +2381,7 @@ function DashboardPage({
     useState([]);
 
   const [requestsLoading, setRequestsLoading] =
-    useState(false);
+    useState(true);
 
   const [pastRequestsOpen, setPastRequestsOpen] =
     useState(false);
@@ -2342,7 +2394,7 @@ function DashboardPage({
     useState([]);
 
   const [matchingLoading, setMatchingLoading] =
-    useState(false);
+    useState(true);
 
   const [matchingError, setMatchingError] =
     useState("");
@@ -2364,7 +2416,7 @@ function DashboardPage({
     useState([]);
 
   const [recipientResponsesLoading, setRecipientResponsesLoading] =
-    useState(false);
+    useState(true);
 
   const hiddenRequestStatuses = ["cancelled", "closed", "expired"];
   const completedRequestStatuses = ["completed", "fulfilled"];
@@ -2632,7 +2684,7 @@ function DashboardPage({
     return () => {
       mounted = false;
     };
-  }, [user?.id]);
+  }, [user]);
 
   /* =========================================================
      GET DONOR GPS LOCATION
@@ -2641,9 +2693,16 @@ function DashboardPage({
   const handleGetLocation = () => {
     if (!navigator.geolocation) {
       setErrorMessage(
-        "Geolocation is not supported by this browser."
+        window.isSecureContext
+          ? "Geolocation is not supported by this browser."
+          : "Location access requires a secure connection (HTTPS or localhost)."
       );
 
+      return;
+    }
+
+    if (!user?.id) {
+      setErrorMessage("Please log in again before saving your location.");
       return;
     }
 
@@ -2660,36 +2719,17 @@ function DashboardPage({
           position.coords.longitude;
 
         try {
-          const {
-            data,
-            error,
-          } = await supabase
+          const { data: updatedProfile, error: updateError } = await supabase
             .from("profiles")
-            .upsert(
-              {
-                id: user.id,
-                full_name: user.user_metadata?.full_name || "",
-                email: user.email || "",
-                account_type: accountType,
-                blood_group: bloodGroup || null,
-                phone: phone || null,
-                location: location || null,
-                availability,
-                last_donation_date: lastDonationDate || null,
-                latitude,
-                longitude,
-              },
-              { onConflict: "id" }
-            )
+            .update({ latitude, longitude })
+            .eq("id", user.id)
             .select()
-            .single();
+            .maybeSingle();
 
-          setGettingLocation(false);
-
-          if (error) {
+          if (updateError) {
             console.error(
               "Location update error:",
-              error
+              updateError
             );
 
             setErrorMessage(
@@ -2699,29 +2739,60 @@ function DashboardPage({
             return;
           }
 
+          let data = updatedProfile;
+
+          if (!data) {
+            const { data: insertedProfile, error: insertError } = await supabase
+              .from("profiles")
+              .upsert(
+                {
+                  id: user.id,
+                  full_name: user.user_metadata?.full_name || "",
+                  email: user.email || "",
+                  account_type: accountType,
+                  blood_group: bloodGroup || null,
+                  phone: isValidPhone(phone) ? phone : null,
+                  location: location || null,
+                  availability,
+                  last_donation_date: lastDonationDate || null,
+                  latitude,
+                  longitude,
+                },
+                { onConflict: "id" }
+              )
+              .select()
+              .single();
+
+            if (insertError) {
+              console.error("Location profile creation error:", insertError);
+              setErrorMessage(
+                "Your location was detected, but it could not be saved. Please try again."
+              );
+              return;
+            }
+
+            data = insertedProfile;
+          }
+
           setProfile((previous) => ({
             ...(previous || {}),
-            ...(data || {}),
+            ...data,
             latitude,
             longitude,
           }));
 
-          setSaveMessage(
-            data
-              ? "Your current location has been saved 📍"
-              : "Location detected. Save your profile to keep your details updated."
-          );
+          setSaveMessage("Your current location has been saved 📍");
         } catch (error) {
           console.error(
             "Unexpected location update error:",
             error
           );
 
-          setGettingLocation(false);
-
           setErrorMessage(
             "Your location was detected, but it could not be saved. Please try again."
           );
+        } finally {
+          setGettingLocation(false);
         }
       },
       (geoError) => {
@@ -2738,11 +2809,11 @@ function DashboardPage({
           );
         } else if (geoError.code === 2) {
           setErrorMessage(
-            "Your location could not be detected."
+            "Your device could not determine your location. Check that location services are enabled."
           );
         } else if (geoError.code === 3) {
           setErrorMessage(
-            "Location request timed out. Please try again."
+            "Location request timed out. Please try again with location services enabled."
           );
         } else {
           setErrorMessage(
@@ -2752,8 +2823,8 @@ function DashboardPage({
       },
       {
         enableHighAccuracy: true,
-        timeout: 15000,
-        maximumAge: 0,
+        timeout: 30000,
+        maximumAge: 10000,
       }
     );
   };
@@ -2764,6 +2835,12 @@ function DashboardPage({
 
   const handleSaveProfile = async (e) => {
     e.preventDefault();
+
+    if (!isValidPhone(phone)) {
+      setSaveMessage("");
+      setErrorMessage(MOBILE_NUMBER_ERROR);
+      return;
+    }
 
     setSaving(true);
     setSaveMessage("");
@@ -2967,10 +3044,8 @@ function DashboardPage({
      FETCH MY BLOOD REQUESTS
   ========================================================= */
 
-  const fetchMyRequests = async () => {
+  const fetchMyRequests = useCallback(async () => {
     if (!user?.id) return;
-
-    setRequestsLoading(true);
 
     try {
       const {
@@ -3007,19 +3082,19 @@ function DashboardPage({
     } finally {
       setRequestsLoading(false);
     }
-  };
+  }, [user]);
 
   useEffect(() => {
     if (!user?.id) return;
 
     fetchMyRequests();
-  }, [user?.id]);
+  }, [fetchMyRequests, user?.id]);
 
   /* =========================================================
      DONOR MATCHING
   ========================================================= */
 
-  const fetchMatchingRequests = async () => {
+  const fetchMatchingRequests = useCallback(async () => {
     if (
       !user?.id ||
       accountType !== "donor"
@@ -3027,9 +3102,6 @@ function DashboardPage({
       setMatchingRequests([]);
       return;
     }
-
-    setMatchingLoading(true);
-    setMatchingError("");
 
     try {
       const donorLatitude =
@@ -3044,20 +3116,57 @@ function DashboardPage({
           ? Number(profile.longitude)
           : null;
 
-      const [acceptedResult, matchingResult] = await Promise.all([
-        supabase.rpc("get_donor_accepted_blood_requests"),
-        !isDonationCoolingDown && bloodGroup
-          ? supabase.rpc("get_matching_blood_requests", {
-              donor_blood_group: bloodGroup,
-              donor_latitude: Number.isFinite(donorLatitude)
-                ? donorLatitude
-                : null,
-              donor_longitude: Number.isFinite(donorLongitude)
-                ? donorLongitude
-                : null,
-            })
-          : Promise.resolve({ data: [], error: null }),
-      ]);
+      let acceptedResult;
+      let matchingResult;
+
+      // Java API brokers the existing Supabase RPCs using the signed-in user's
+      // JWT. If Java is not running, preserve the original direct-RPC path.
+      try {
+        const { data: sessionData, error: sessionError } =
+          await supabase.auth.getSession();
+        if (sessionError) throw sessionError;
+        const accessToken = sessionData?.session?.access_token;
+        if (!accessToken) throw new Error("Active session token unavailable.");
+
+        const javaResponse = await fetch("/api/matching/requests", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({
+            bloodGroup,
+            latitude: Number.isFinite(donorLatitude) ? donorLatitude : null,
+            longitude: Number.isFinite(donorLongitude) ? donorLongitude : null,
+            isDonationCoolingDown,
+          }),
+        });
+        if (!javaResponse.ok) {
+          throw new Error(`Java matching API returned ${javaResponse.status}`);
+        }
+        const javaData = await javaResponse.json();
+        acceptedResult = { data: javaData.accepted || [], error: null };
+        matchingResult = { data: javaData.matching || [], error: null };
+      } catch (javaError) {
+        console.warn(
+          "Java matching API unavailable; using existing Supabase RPC flow.",
+          javaError
+        );
+        [acceptedResult, matchingResult] = await Promise.all([
+          supabase.rpc("get_donor_accepted_blood_requests"),
+          !isDonationCoolingDown && bloodGroup
+            ? supabase.rpc("get_matching_blood_requests", {
+                donor_blood_group: bloodGroup,
+                donor_latitude: Number.isFinite(donorLatitude)
+                  ? donorLatitude
+                  : null,
+                donor_longitude: Number.isFinite(donorLongitude)
+                  ? donorLongitude
+                  : null,
+              })
+            : Promise.resolve({ data: [], error: null }),
+        ]);
+      }
 
       // Accepted chats have their own UI below, backed by the donor's own
       // response rows. Do not make that experience depend on this optional
@@ -3083,6 +3192,7 @@ function DashboardPage({
 
       const combinedRequests = [...requestsById.values()];
       setMatchingRequests(combinedRequests);
+      setMatchingError("");
 
       if (!bloodGroup && combinedRequests.length === 0) {
         setMatchingError(
@@ -3107,13 +3217,19 @@ function DashboardPage({
     } finally {
       setMatchingLoading(false);
     }
-  };
+  }, [
+    accountType,
+    bloodGroup,
+    isDonationCoolingDown,
+    profile,
+    user,
+  ]);
 
   /* =========================================================
      DONOR RESPONSE FETCH
   ========================================================= */
 
-  const fetchDonationResponses = async () => {
+  const fetchDonationResponses = useCallback(async () => {
     if (!user?.id || accountType !== "donor") {
       setDonationResponses([]);
       return;
@@ -3136,19 +3252,17 @@ function DashboardPage({
       console.error("Unexpected donation responses error:", error);
       setDonationResponses([]);
     }
-  };
+  }, [accountType, user]);
 
   /* =========================================================
      RECIPIENT RESPONSE FETCH
   ========================================================= */
 
-  const fetchRecipientResponses = async () => {
+  const fetchRecipientResponses = useCallback(async () => {
     if (!user?.id) {
       setRecipientResponses([]);
       return;
     }
-
-    setRecipientResponsesLoading(true);
 
     try {
       let rpcResponses = [];
@@ -3244,13 +3358,13 @@ function DashboardPage({
     } finally {
       setRecipientResponsesLoading(false);
     }
-  };
+  }, [user]);
 
   /* =========================================================
      PRIVATE DONATION CHAT
   ========================================================= */
 
-  const fetchChatMessages = async (responseId, { silent = false } = {}) => {
+  const fetchChatMessages = useCallback(async (responseId, { silent = false } = {}) => {
     if (!responseId || !user?.id) return;
 
     if (!silent) setChatLoading(true);
@@ -3279,7 +3393,7 @@ function DashboardPage({
     } finally {
       if (!silent) setChatLoading(false);
     }
-  };
+  }, [user]);
 
   const openDonationChat = async (responseLike) => {
     const responseId = responseLike?.response_id || responseLike?.id;
@@ -3397,9 +3511,17 @@ function DashboardPage({
   };
 
   const handleAcceptDonor = async (responseId) => {
-    if (!user?.id || !responseId) {
+    if (!user?.id || !responseId || donationLoading) {
       return;
     }
+
+    const confirmed = window.confirm(
+      "Accept this donor for your blood request?"
+    );
+    if (!confirmed) return;
+
+    setDonationLoading(true);
+    setChatError("");
 
     try {
       const { data, error } = await supabase.rpc(
@@ -3425,6 +3547,8 @@ function DashboardPage({
     } catch (error) {
       console.error("Unexpected accept donor error:", error);
       setChatError("Unable to accept this donor right now. Please try again.");
+    } finally {
+      setDonationLoading(false);
     }
   };
 
@@ -3466,7 +3590,12 @@ function DashboardPage({
   };
 
   const handleCompleteDonation = async (responseId) => {
-    if (!user?.id || !responseId || accountType !== "donor") return;
+    if (!user?.id || !responseId || accountType !== "donor" || donationLoading) return;
+
+    const confirmed = window.confirm(
+      "Mark this donation as completed? This updates your donation history and starts the six-month cooldown."
+    );
+    if (!confirmed) return;
 
     setDonationLoading(true);
     setDonationError("");
@@ -3518,14 +3647,14 @@ function DashboardPage({
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [chatOpen, selectedResponse?.response_id]);
+  }, [chatOpen, fetchChatMessages, selectedResponse?.response_id]);
 
   /* =========================================================
      I CAN DONATE
   ========================================================= */
 
   const handleICanDonate = async (requestId) => {
-    if (!user?.id || !requestId) return;
+    if (!user?.id || !requestId || donationLoading) return;
 
     if (!bloodReportPath) {
       setDonationError("Upload your blood report from Profile before responding to a donation request.");
@@ -3538,21 +3667,24 @@ function DashboardPage({
       return;
     }
 
+    const alreadyResponded = donationResponses.some(
+      (response) => response.request_id === requestId
+    );
+
+    if (alreadyResponded) {
+      setDonationError("You have already responded to this blood request.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Send your offer to donate? The requester will see that you are interested."
+    );
+    if (!confirmed) return;
+
     setDonationLoading(true);
     setDonationError("");
 
     try {
-      const alreadyResponded = donationResponses.some(
-        (response) => response.request_id === requestId
-      );
-
-      if (alreadyResponded) {
-        setDonationError(
-          "You have already responded to this blood request."
-        );
-        return;
-      }
-
       const { data, error } = await supabase
         .from("blood_request_responses")
         .insert([
@@ -3597,19 +3729,24 @@ function DashboardPage({
   const handleMarkRequestUnavailable = async (requestId) => {
     if (!user?.id || !requestId || donationLoading) return;
 
+    const alreadyResponded = donationResponses.some(
+      (response) => response.request_id === requestId
+    );
+
+    if (alreadyResponded) {
+      setDonationError("You have already responded to this request.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Mark this request as unavailable? It will be hidden from your matching requests."
+    );
+    if (!confirmed) return;
+
     setDonationLoading(true);
     setDonationError("");
 
     try {
-      const alreadyResponded = donationResponses.some(
-        (response) => response.request_id === requestId
-      );
-
-      if (alreadyResponded) {
-        setDonationError("You have already responded to this request.");
-        return;
-      }
-
       const { data, error } = await supabase
         .from("blood_request_responses")
         .insert({
@@ -3651,6 +3788,11 @@ function DashboardPage({
       return;
     }
 
+    const confirmed = window.confirm(
+      "Mark this donation as unavailable? Your response will be updated and this chat will close."
+    );
+    if (!confirmed) return;
+
     setDonationLoading(true);
     setChatError("");
 
@@ -3684,10 +3826,10 @@ function DashboardPage({
   };
 
   useEffect(() => {
-    if (accountType !== "donor") return;
+    if (accountType !== "donor" || !user?.id) return;
 
     fetchDonationResponses();
-  }, [user?.id, accountType]);
+  }, [accountType, fetchDonationResponses, user?.id]);
 
   useEffect(() => {
     if (!canRequestBlood || !user?.id) return;
@@ -3703,7 +3845,13 @@ function DashboardPage({
     }, 5000);
 
     return () => clearInterval(interval);
-  }, [user?.id, canRequestBlood, activeRequestIds]);
+  }, [
+    activeRequestIds,
+    canRequestBlood,
+    fetchMyRequests,
+    fetchRecipientResponses,
+    user?.id,
+  ]);
 
   useEffect(() => {
     if (accountType !== "donor") {
@@ -3717,46 +3865,11 @@ function DashboardPage({
     }, 10000);
 
     return () => clearInterval(interval);
-  }, [
-    user?.id,
-    accountType,
-    bloodGroup,
-    profile?.latitude,
-    profile?.longitude,
-    lastDonationDate,
-  ]);
+  }, [accountType, fetchDonationResponses, fetchMatchingRequests]);
 
   /* =========================================================
      AUTO-FILL REQUEST DETAILS
   ========================================================= */
-
-  useEffect(() => {
-    if (
-      !requestBloodGroup &&
-      bloodGroup
-    ) {
-      setRequestBloodGroup(
-        bloodGroup
-      );
-    }
-  }, [
-    bloodGroup,
-    requestBloodGroup,
-  ]);
-
-  useEffect(() => {
-    if (
-      !requestLocation &&
-      location
-    ) {
-      setRequestLocation(
-        location
-      );
-    }
-  }, [
-    location,
-    requestLocation,
-  ]);
 
   /* =========================================================
      CREATE BLOOD REQUEST
@@ -3765,33 +3878,32 @@ function DashboardPage({
   const handleCreateBloodRequest = async (e) => {
     e.preventDefault();
 
+    const selectedBloodGroup = requestBloodGroup || bloodGroup;
+    const selectedLocation = requestLocation || location;
+
     setRequestSuccess("");
     setRequestError("");
 
     if (activeRequest) {
       setRequestError(
-        "You already have an active blood request. Cancel it before creating another one."
+        "You already have an active blood request. Close it before creating another one."
       );
       return;
     }
 
-    setRequestLoading(true);
-
-    if (!requestBloodGroup) {
+    if (!selectedBloodGroup) {
       setRequestError(
         "Please select the required blood group."
       );
 
-      setRequestLoading(false);
       return;
     }
 
-    if (!requestLocation.trim()) {
+    if (!selectedLocation.trim()) {
       setRequestError(
         "Please enter the location where blood support is needed."
       );
 
-      setRequestLoading(false);
       return;
     }
 
@@ -3802,10 +3914,16 @@ function DashboardPage({
 
       if (Number.isNaN(selectedDate.getTime()) || selectedDate < today) {
         setRequestError("Required date must be today or a future date.");
-        setRequestLoading(false);
         return;
       }
     }
+
+    const confirmed = window.confirm(
+      "Create this blood request? Donors will be able to see it and respond."
+    );
+    if (!confirmed) return;
+
+    setRequestLoading(true);
 
     const latitude =
       profile?.latitude != null && Number.isFinite(Number(profile.latitude))
@@ -3826,8 +3944,8 @@ function DashboardPage({
         .insert([
           {
             requester_id: user.id,
-            blood_group: requestBloodGroup,
-            location: requestLocation.trim(),
+            blood_group: selectedBloodGroup,
+            location: selectedLocation.trim(),
             latitude,
             longitude,
             required_date:
@@ -3892,7 +4010,7 @@ function DashboardPage({
   };
 
   /* =========================================================
-     CANCEL BLOOD REQUEST
+     CLOSE BLOOD REQUEST
   ========================================================= */
 
   const handleCloseBloodRequest = async (requestId) => {
@@ -3933,71 +4051,6 @@ function DashboardPage({
       setRequestError(error?.message || "Unable to close this request right now.");
     } finally {
       setDonationLoading(false);
-    }
-  };
-
-  const handleCancelBloodRequest = async (
-    requestId
-  ) => {
-    if (!requestId) return;
-
-    setRequestError("");
-    setRequestSuccess("");
-
-    try {
-      const { data, error } = await supabase.rpc(
-        "cancel_blood_request_and_delete_chats",
-        { target_request_id: requestId }
-      );
-
-      if (error || data !== true) {
-        console.error(
-          "Blood request cancel error:",
-          error
-        );
-
-        setRequestError(
-          `Unable to cancel this request: ${
-            error.message ||
-            "Unknown Supabase error"
-          }`
-        );
-
-        return;
-      }
-
-      setMyRequests((previous) =>
-        previous.map((request) =>
-          request.id === requestId
-            ? {
-                ...request,
-                status: "Cancelled",
-              }
-            : request
-        )
-      );
-      setRecipientResponses((previous) =>
-        previous.filter((response) => response.request_id !== requestId)
-      );
-      if (selectedResponse?.request_id === requestId) {
-        closeDonationChat();
-      }
-
-      setRequestSuccess(
-        "Blood request cancelled and its chat history permanently deleted."
-      );
-    } catch (error) {
-      console.error(
-        "Unexpected blood request cancel error:",
-        error
-      );
-
-      setRequestError(
-        `Unable to cancel this request: ${
-          error.message ||
-          "Unknown error"
-        }`
-      );
     }
   };
 
@@ -4053,13 +4106,22 @@ function DashboardPage({
 
   const profileCompletion =
     useMemo(() => {
-      const fields = [
-        Boolean(bloodGroup),
-        Boolean(phone),
-        Boolean(location),
-        Boolean(bloodReportPath),
+      const hasCoordinates =
         profile?.latitude != null &&
-          profile?.longitude != null,
+        String(profile.latitude).trim() !== "" &&
+        profile?.longitude != null &&
+        String(profile.longitude).trim() !== "" &&
+        Number.isFinite(Number(profile.latitude)) &&
+        Number.isFinite(Number(profile.longitude));
+      const hasLocation = Boolean(location.trim()) || hasCoordinates;
+      const fields = [
+        Boolean(
+          profile?.full_name?.trim() ||
+          user?.user_metadata?.full_name?.trim()
+        ),
+        Boolean(bloodGroup),
+        hasLocation,
+        ...(accountType === "donor" ? [Boolean(bloodReportPath)] : []),
       ];
 
       const completed =
@@ -4071,12 +4133,12 @@ function DashboardPage({
           100
       );
     }, [
+      accountType,
       bloodGroup,
-      phone,
-      location,
       bloodReportPath,
-      profile?.latitude,
-      profile?.longitude,
+      location,
+      profile,
+      user?.user_metadata?.full_name,
     ]);
 
   const selectedChatRequest = myRequests.find(
@@ -4306,15 +4368,16 @@ function DashboardPage({
 
             <div
               className="completion-ring"
-              style={{ "--completion": `${profileCompletion}%` }}
+              style={{ "--completion": `${loading ? 0 : profileCompletion}%` }}
               role="progressbar"
               aria-label="Profile completion"
               aria-valuemin={0}
               aria-valuemax={100}
-              aria-valuenow={profileCompletion}
+              aria-valuenow={loading ? undefined : profileCompletion}
+              aria-valuetext={loading ? "Loading profile completion" : `${profileCompletion}%`}
             >
               <span>
-                {profileCompletion}%
+                {loading ? "…" : `${profileCompletion}%`}
               </span>
             </div>
 
@@ -4324,7 +4387,9 @@ function DashboardPage({
               </span>
 
               <strong>
-                {profileCompletion === 100
+                {loading
+                  ? "Loading"
+                  : profileCompletion === 100
                   ? "Complete"
                   : "In progress"}
               </strong>
@@ -4492,15 +4557,30 @@ function DashboardPage({
                 Phone number
 
                 <input
-                  type="tel"
+                  type="text"
                   value={phone}
                   onChange={(e) =>
                     setPhone(
-                      e.target.value
+                      sanitizePhone(e.target.value)
                     )
                   }
+                  onKeyDown={(e) => {
+                    if (
+                      /^[1-5]$/.test(e.key) &&
+                      e.currentTarget.selectionStart === 0 &&
+                      e.currentTarget.selectionEnd === 0
+                    ) {
+                      e.preventDefault();
+                    }
+                  }}
                   placeholder="Enter phone number"
+                  inputMode="numeric"
+                  autoComplete="tel-national"
+                  maxLength={10}
+                  pattern="[6-9][0-9]{9}"
+                  title="Enter Digits Only"
                 />
+                <small>Enter Digits Only</small>
               </label>
 
             </div>
@@ -4550,6 +4630,19 @@ function DashboardPage({
                 </span>
               )}
             </button>
+
+            {profile?.latitude != null &&
+              profile?.longitude != null &&
+              Number.isFinite(Number(profile.latitude)) &&
+              Number.isFinite(Number(profile.longitude)) && (
+                <p className="gps-coordinate-copy">
+                  Saved GPS coordinates:{" "}
+                  <strong>
+                    {Number(profile.latitude).toFixed(6)},{" "}
+                    {Number(profile.longitude).toFixed(6)}
+                  </strong>
+                </p>
+              )}
 
             {accountType === "donor" && (
               <div className="blood-report-upload">
@@ -4765,6 +4858,15 @@ function DashboardPage({
                 ? "Location saved 📍"
                 : "Not saved"}
             </strong>
+            {profile?.latitude != null &&
+                profile?.longitude != null &&
+                Number.isFinite(Number(profile.latitude)) &&
+                Number.isFinite(Number(profile.longitude)) && (
+                  <small>
+                    {Number(profile.latitude).toFixed(6)},{" "}
+                    {Number(profile.longitude).toFixed(6)}
+                  </small>
+                )}
 
           </div>
 
@@ -4836,7 +4938,7 @@ function DashboardPage({
                 <span>!</span>
                 <div>
                   <strong>Active request in progress</strong>
-                  <p>Cancel your current request before creating another one, so donor responses never get mixed up.</p>
+                  <p>Close your current request before creating another one, so donor responses never get mixed up.</p>
                 </div>
               </div>
             )}
@@ -4852,7 +4954,7 @@ function DashboardPage({
                   Required blood group
 
                   <select
-                    value={requestBloodGroup}
+                    value={requestBloodGroup || bloodGroup}
                     onChange={(e) =>
                       setRequestBloodGroup(
                         e.target.value
@@ -4930,7 +5032,7 @@ function DashboardPage({
 
                 <input
                   type="text"
-                  value={requestLocation}
+                  value={requestLocation || location}
                   onChange={(e) =>
                     setRequestLocation(
                       e.target.value

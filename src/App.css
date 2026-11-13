@@ -2454,6 +2454,14 @@ a {
   display: none;
 }
 
+.auth-home-button {
+  align-self: flex-start;
+  min-height: 38px;
+  margin-bottom: 24px;
+  padding: 8px 13px;
+  font-size: 12px;
+}
+
 .auth-heading {
   margin-bottom: 27px;
 }
@@ -3318,6 +3326,18 @@ a {
   color: var(--muted);
   font-size: 8px;
   font-weight: 500;
+}
+
+.gps-coordinate-copy {
+  margin: -5px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.gps-coordinate-copy strong {
+  color: var(--ink-soft);
+  font-weight: 700;
 }
 
 .location-arrow {
